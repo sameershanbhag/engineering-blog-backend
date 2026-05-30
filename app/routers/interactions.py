@@ -1,5 +1,6 @@
 import re
 from datetime import date, datetime, timezone
+from html import escape
 
 import nh3
 from fastapi import APIRouter, Depends, HTTPException
@@ -44,11 +45,25 @@ _ALLOWED_ATTRS = {
 }
 
 
-def _sanitize_body(html: str) -> str:
-    """Sanitize the article body. It is an HTML field (the WYSIWYG editor sends
-    HTML; clients must HTML-escape literal text). Always run through nh3 — never
-    guess plain-vs-HTML from substrings."""
-    return nh3.clean(html, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS)
+# A real HTML tag: "<" + optional "/" + a letter, ending in ">". Matches
+# <p>, </p>, <br/>, <a href=...> but NOT prose/code like "a < b" or "i<n;".
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
+def _plain_to_html(body: str) -> str:
+    """Escape plain text and wrap paragraphs, so angle-bracketed prose/code is
+    preserved rather than stripped."""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+    return "".join(f"<p>{escape(p)}</p>" for p in paragraphs)
+
+
+def _sanitize_body(body: str) -> str:
+    """If the body contains real HTML tags (the WYSIWYG editor sends HTML),
+    sanitize with nh3; otherwise treat it as plain text and escape it. This
+    avoids both stored XSS and silent content loss for tag-free input."""
+    if _HTML_TAG_RE.search(body):
+        return nh3.clean(body, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS)
+    return _plain_to_html(body)
 
 
 def _text_from_html(html: str) -> str:
@@ -126,7 +141,14 @@ def my_bookmarks(
     ids = [r.article_id for r in rows]
     if not ids:
         return []
-    articles = list(session.exec(select(Article).where(Article.id.in_(ids))).all())
+    # Only return articles the viewer may still see: published+public, or their
+    # own (a bookmarked article the author later unpublished must not leak).
+    articles = [
+        a
+        for a in session.exec(select(Article).where(Article.id.in_(ids))).all()
+        if (a.status == "published" and a.visibility == "public")
+        or a.author_handle == user.author_handle
+    ]
     return enrich_articles(articles, session, user)
 
 

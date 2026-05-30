@@ -128,10 +128,14 @@ def author_articles(
     session: Session = Depends(get_session),
     viewer: User | None = Depends(get_optional_user),
 ):
-    articles = list(
-        session.exec(
-            _public_listable(select(Article)).where(Article.author_handle == handle)
-        ).all()
+    # The owner sees all their published work (incl. unlisted) on their own
+    # profile; everyone else sees only published + public.
+    is_owner = bool(viewer and viewer.author_handle == handle)
+    stmt = select(Article).where(
+        Article.author_handle == handle, Article.status == "published"
     )
+    if not is_owner:
+        stmt = stmt.where(Article.visibility == "public")
+    articles = list(session.exec(stmt).all())
     articles.sort(key=lambda a: a.published_at, reverse=True)
     return enrich_articles(articles, session, viewer)

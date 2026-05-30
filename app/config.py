@@ -44,9 +44,9 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
-        if not origins:
-            raise ValueError("CORS_ORIGINS resolved to an empty list")
-        return origins
+        # Never crash app startup on a bad CORS string; fall back to localhost.
+        # A production misconfig is surfaced by the validator below instead.
+        return origins or ["http://localhost:3000"]
 
     @model_validator(mode="after")
     def _enforce_production_hardening(self) -> "Settings":
@@ -59,6 +59,8 @@ class Settings(BaseSettings):
             problems.append("INTERNAL_API_SECRET must be set")
         if self.database_url.startswith("sqlite"):
             problems.append("DATABASE_URL must point at a real database (not sqlite)")
+        if not [o.strip() for o in self.cors_origins.split(",") if o.strip()]:
+            problems.append("CORS_ORIGINS must list at least one origin")
         if problems:
             raise ValueError(
                 "Insecure production config: " + "; ".join(problems)

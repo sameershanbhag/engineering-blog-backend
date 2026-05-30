@@ -1,4 +1,5 @@
 import hashlib
+import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlmodel import Session, select
@@ -111,7 +112,8 @@ def _require_internal_secret(x_internal_secret: str | None = Header(default=None
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="OAuth federation is not configured (INTERNAL_API_SECRET unset).",
         )
-    if not x_internal_secret or x_internal_secret != expected:
+    # Constant-time compare to avoid leaking the secret via response timing.
+    if not x_internal_secret or not secrets.compare_digest(x_internal_secret, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Forbidden")
 
 

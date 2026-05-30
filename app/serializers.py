@@ -68,9 +68,31 @@ def enrich_articles(
     """Attach author/discipline + the viewer's like/bookmark state to a set of
     articles, batching all lookups (no N+1). Callers may pass a preloaded
     `authors` dict to avoid re-querying it."""
+    # Fetch only the authors/disciplines these articles reference (not the whole
+    # tables). list_articles passes a preloaded `authors` dict for its search.
     if authors is None:
-        authors = {a.handle: a for a in session.exec(select(Author)).all()}
-    disciplines = {d.slug: d for d in session.exec(select(Discipline)).all()}
+        handles = {a.author_handle for a in articles}
+        authors = (
+            {
+                a.handle: a
+                for a in session.exec(
+                    select(Author).where(Author.handle.in_(handles))
+                ).all()
+            }
+            if handles
+            else {}
+        )
+    slugs = {a.discipline_slug for a in articles}
+    disciplines = (
+        {
+            d.slug: d
+            for d in session.exec(
+                select(Discipline).where(Discipline.slug.in_(slugs))
+            ).all()
+        }
+        if slugs
+        else {}
+    )
 
     liked: set[str] = set()
     bookmarked: set[str] = set()
