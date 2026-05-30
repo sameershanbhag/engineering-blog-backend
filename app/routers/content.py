@@ -1,56 +1,21 @@
 from collections import Counter
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..models import Article, Author, Bookmark, Discipline, Like, User
+from ..models import Article, Author, Discipline, User
 from ..schemas import ArticleOut, AuthorOut, DisciplineOut, TopicOut
 from ..security import get_optional_user
-from ..serializers import article_to_out, author_to_out, discipline_to_out
+from ..serializers import author_to_out, discipline_to_out, enrich_articles
 
 router = APIRouter()
 
 
-def _enrich(
-    articles: list[Article],
-    session: Session,
-    viewer: User | None,
-) -> list[ArticleOut]:
-    """Attach author/discipline + viewer like/bookmark state to a set of articles."""
-    authors = {a.handle: a for a in session.exec(select(Author)).all()}
-    disciplines = {d.slug: d for d in session.exec(select(Discipline)).all()}
-
-    liked: set[str] = set()
-    bookmarked: set[str] = set()
-    if viewer:
-        liked = {
-            l.article_id
-            for l in session.exec(select(Like).where(Like.user_id == viewer.id)).all()
-        }
-        bookmarked = {
-            b.article_id
-            for b in session.exec(
-                select(Bookmark).where(Bookmark.user_id == viewer.id)
-            ).all()
-        }
-
-    out: list[ArticleOut] = []
-    for art in articles:
-        author = authors.get(art.author_handle)
-        discipline = disciplines.get(art.discipline_slug)
-        if not author or not discipline:
-            continue
-        out.append(
-            article_to_out(
-                art,
-                author,
-                discipline,
-                liked=art.id in liked,
-                bookmarked=art.id in bookmarked,
-            )
-        )
-    return out
+def _public_listable(stmt):
+    """Articles that belong in public listings: published AND public visibility.
+    (Unlisted articles are reachable by direct link but never listed.)"""
+    return stmt.where(Article.status == "published", Article.visibility == "public")
 
 
 @router.get("/articles", response_model=list[ArticleOut])
@@ -60,14 +25,16 @@ def list_articles(
     session: Session = Depends(get_session),
     viewer: User | None = Depends(get_optional_user),
 ):
-    stmt = select(Article).where(Article.status == "published")
+    stmt = _public_listable(select(Article))
     if discipline:
         stmt = stmt.where(Article.discipline_slug == discipline)
     articles = list(session.exec(stmt).all())
 
+    # Load authors once; reused for both the q-filter and enrichment.
+    authors = {a.handle: a for a in session.exec(select(Author)).all()}
+
     if q:
         needle = q.strip().lower()
-        authors = {a.handle: a for a in session.exec(select(Author)).all()}
         articles = [
             a
             for a in articles
@@ -77,15 +44,14 @@ def list_articles(
                     a.title,
                     a.excerpt,
                     a.category,
-                    authors.get(a.author_handle).name if authors.get(a.author_handle) else "",
+                    authors[a.author_handle].name if a.author_handle in authors else "",
                     *a.tags,
                 ]
             ).lower()
         ]
 
-    # Newest first.
     articles.sort(key=lambda a: a.published_at, reverse=True)
-    return _enrich(articles, session, viewer)
+    return enrich_articles(articles, session, viewer, authors=authors)
 
 
 @router.get("/articles/{slug}", response_model=ArticleOut)
@@ -98,13 +64,13 @@ def get_article(
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
 
-    # Drafts are visible only to their author.
+    # Drafts are visible only to their author; unlisted is reachable by link.
     if article.status != "published":
         owner = viewer and viewer.author_handle == article.author_handle
         if not owner:
             raise HTTPException(status_code=404, detail="Article not found")
 
-    return _enrich([article], session, viewer)[0]
+    return enrich_articles([article], session, viewer)[0]
 
 
 @router.get("/articles/{slug}/related", response_model=list[ArticleOut])
@@ -118,15 +84,12 @@ def related_articles(
     if not article:
         return []
     others = list(
-        session.exec(
-            select(Article).where(
-                Article.status == "published", Article.slug != slug
-            )
-        ).all()
+        session.exec(_public_listable(select(Article)).where(Article.slug != slug)).all()
     )
-    # Prefer same discipline.
-    others.sort(key=lambda a: (a.discipline_slug != article.discipline_slug, a.published_at))
-    return _enrich(others[:limit], session, viewer)
+    # Newest first, then (stable) same-discipline first.
+    others.sort(key=lambda a: a.published_at, reverse=True)
+    others.sort(key=lambda a: a.discipline_slug != article.discipline_slug)
+    return enrich_articles(others[:limit], session, viewer)
 
 
 @router.get("/disciplines", response_model=list[DisciplineOut])
@@ -138,7 +101,7 @@ def list_disciplines(session: Session = Depends(get_session)):
 @router.get("/topics/trending", response_model=list[TopicOut])
 def trending_topics(session: Session = Depends(get_session)):
     counter: Counter[str] = Counter()
-    for art in session.exec(select(Article).where(Article.status == "published")).all():
+    for art in session.exec(_public_listable(select(Article))).all():
         counter.update(art.tags)
     return [TopicOut(tag=tag, count=count) for tag, count in counter.most_common(5)]
 
@@ -167,10 +130,8 @@ def author_articles(
 ):
     articles = list(
         session.exec(
-            select(Article).where(
-                Article.author_handle == handle, Article.status == "published"
-            )
+            _public_listable(select(Article)).where(Article.author_handle == handle)
         ).all()
     )
     articles.sort(key=lambda a: a.published_at, reverse=True)
-    return _enrich(articles, session, viewer)
+    return enrich_articles(articles, session, viewer)

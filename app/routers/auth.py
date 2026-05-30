@@ -1,8 +1,9 @@
-import re
+import hashlib
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlmodel import Session, select
 
+from ..config import settings
 from ..database import get_session
 from ..models import Author, User
 from ..schemas import AuthResponse, AuthUserOut, LoginIn, OAuthIn, RegisterIn
@@ -12,6 +13,7 @@ from ..security import (
     hash_password,
     verify_password,
 )
+from ..utils import slugify
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -25,12 +27,8 @@ _AVATAR_COLORS = [
 ]
 
 
-def _slugify(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_") or "engineer"
-
-
 def _unique_handle(base: str, session: Session) -> str:
-    handle = _slugify(base)
+    handle = slugify(base, sep="_", fallback="engineer")
     candidate = handle
     n = 1
     while session.get(Author, candidate):
@@ -41,7 +39,9 @@ def _unique_handle(base: str, session: Session) -> str:
 
 def _create_author(name: str, email: str, image: str | None, session: Session) -> Author:
     handle = _unique_handle(name or email.split("@")[0], session)
-    color = _AVATAR_COLORS[hash(email) % len(_AVATAR_COLORS)]
+    # Deterministic across processes/restarts (unlike builtin hash()).
+    digest = int(hashlib.sha256(email.encode()).hexdigest(), 16)
+    color = _AVATAR_COLORS[digest % len(_AVATAR_COLORS)]
     author = Author(
         handle=handle,
         name=name or email.split("@")[0],
@@ -101,9 +101,28 @@ def login(body: LoginIn, session: Session = Depends(get_session)):
     return _auth_response(user)
 
 
+def _require_internal_secret(x_internal_secret: str | None = Header(default=None)) -> None:
+    """Guard /auth/oauth: only the trusted frontend (which holds the shared
+    secret) may federate an OAuth identity into a backend token. Without this,
+    anyone could POST an arbitrary email and mint a token for that account."""
+    expected = settings.internal_api_secret
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OAuth federation is not configured (INTERNAL_API_SECRET unset).",
+        )
+    if not x_internal_secret or x_internal_secret != expected:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Forbidden")
+
+
 @router.post("/oauth", response_model=AuthResponse)
-def oauth(body: OAuthIn, session: Session = Depends(get_session)):
-    """Federate an OAuth sign-in (from NextAuth) into a backend user + token."""
+def oauth(
+    body: OAuthIn,
+    session: Session = Depends(get_session),
+    _: None = Depends(_require_internal_secret),
+):
+    """Federate an OAuth sign-in (from NextAuth) into a backend user + token.
+    Gated by the internal shared secret (see _require_internal_secret)."""
     user = session.exec(select(User).where(User.email == body.email)).first()
     if user is None:
         author = _create_author(body.name, body.email, body.image, session)

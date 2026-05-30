@@ -1,13 +1,12 @@
 import re
 from datetime import date, datetime, timezone
-from html import escape
 
 import nh3
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..models import Article, Author, Bookmark, Discipline, Like, User
+from ..models import Article, Bookmark, Discipline, Like, User
 from ..schemas import (
     ArticleOut,
     BookmarkResult,
@@ -15,18 +14,15 @@ from ..schemas import (
     CreateArticleResult,
     LikeResult,
 )
-from ..security import get_current_user, get_optional_user
-from ..serializers import article_to_out
+from ..security import get_current_user
+from ..serializers import enrich_articles
+from ..utils import slugify
 
 router = APIRouter()
 
 
-def _slugify(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:80] or "untitled"
-
-
 def _unique_slug(title: str, session: Session) -> str:
-    base = _slugify(title)
+    base = slugify(title, fallback="untitled")
     candidate = base
     n = 1
     while session.exec(select(Article).where(Article.slug == candidate)).first():
@@ -35,14 +31,8 @@ def _unique_slug(title: str, session: Session) -> str:
     return candidate
 
 
-def _plain_to_html(body: str) -> str:
-    """Escape plain text and wrap paragraphs (fallback when input isn't HTML)."""
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
-    return "".join(f"<p>{escape(p)}</p>" for p in paragraphs)
-
-
 # Safe subset of tags the rich-text editor can produce. Everything else is
-# stripped — the result is rendered as HTML on the client.
+# stripped — the result is rendered as HTML on the client (dangerouslySetInnerHTML).
 _ALLOWED_TAGS = {
     "p", "br", "strong", "b", "em", "i", "u", "s", "a",
     "h2", "h3", "ul", "ol", "li", "blockquote", "code", "pre", "img", "hr",
@@ -54,30 +44,15 @@ _ALLOWED_ATTRS = {
 }
 
 
-def _sanitize_body(body: str) -> str:
-    """Sanitize rich-text HTML; if the input is plain text, wrap it safely."""
-    looks_like_html = "<" in body and ">" in body
-    if not looks_like_html:
-        return _plain_to_html(body)
-    return nh3.clean(body, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS)
+def _sanitize_body(html: str) -> str:
+    """Sanitize the article body. It is an HTML field (the WYSIWYG editor sends
+    HTML; clients must HTML-escape literal text). Always run through nh3 — never
+    guess plain-vs-HTML from substrings."""
+    return nh3.clean(html, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS)
 
 
 def _text_from_html(html: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
-
-
-def _one(article: Article, session: Session, viewer: User | None) -> ArticleOut:
-    author = session.get(Author, article.author_handle)
-    discipline = session.get(Discipline, article.discipline_slug)
-    liked = bool(
-        viewer
-        and session.get(Like, (viewer.id, article.id))
-    )
-    bookmarked = bool(
-        viewer
-        and session.get(Bookmark, (viewer.id, article.id))
-    )
-    return article_to_out(article, author, discipline, liked=liked, bookmarked=bookmarked)
 
 
 @router.post("/articles", response_model=CreateArticleResult)
@@ -139,7 +114,7 @@ def my_drafts(
         ).all()
     )
     drafts.sort(key=lambda a: a.created_at, reverse=True)
-    return [_one(a, session, user) for a in drafts]
+    return enrich_articles(drafts, session, user)
 
 
 @router.get("/me/bookmarks", response_model=list[ArticleOut])
@@ -151,8 +126,8 @@ def my_bookmarks(
     ids = [r.article_id for r in rows]
     if not ids:
         return []
-    articles = session.exec(select(Article).where(Article.id.in_(ids))).all()
-    return [_one(a, session, user) for a in articles]
+    articles = list(session.exec(select(Article).where(Article.id.in_(ids))).all())
+    return enrich_articles(articles, session, user)
 
 
 def _get_article_or_404(slug: str, session: Session) -> Article:

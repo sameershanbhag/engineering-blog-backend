@@ -12,5 +12,9 @@ wheels/
 # app
 blog.db
 .env
+.env.*
+!.env.example
 .uvicorn.log
 *.log
+# Local Cloudflare Tunnel config (ties to this machine's tunnel credentials)
+cloudflared.yml

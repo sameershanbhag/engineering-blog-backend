@@ -148,6 +148,11 @@ def seed() -> None:
             session.add(Discipline(slug=slug, name=name, description=desc, icon=icon))
         for a in AUTHORS:
             session.add(Author(**a))
+        # Flush (not commit) so the parents exist for FK checks (Postgres enforces
+        # them), while keeping a single atomic commit: if any article insert fails,
+        # the whole seed rolls back rather than leaving a permanent partial state.
+        session.flush()
+
         for art in ARTICLES:
             session.add(Article(**art, created_at=art["published_at"]))
         session.commit()

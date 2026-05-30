@@ -1,4 +1,6 @@
-from .models import Article, Author, Discipline
+from sqlmodel import Session, select
+
+from .models import Article, Author, Bookmark, Discipline, Like, User
 from .schemas import ArticleOut, AuthorOut, AuthorStats, CoverOut, DisciplineOut
 
 
@@ -54,3 +56,49 @@ def article_to_out(
         liked=liked,
         bookmarked=bookmarked,
     )
+
+
+def enrich_articles(
+    articles: list[Article],
+    session: Session,
+    viewer: User | None,
+    *,
+    authors: dict[str, Author] | None = None,
+) -> list[ArticleOut]:
+    """Attach author/discipline + the viewer's like/bookmark state to a set of
+    articles, batching all lookups (no N+1). Callers may pass a preloaded
+    `authors` dict to avoid re-querying it."""
+    if authors is None:
+        authors = {a.handle: a for a in session.exec(select(Author)).all()}
+    disciplines = {d.slug: d for d in session.exec(select(Discipline)).all()}
+
+    liked: set[str] = set()
+    bookmarked: set[str] = set()
+    if viewer:
+        liked = {
+            row.article_id
+            for row in session.exec(select(Like).where(Like.user_id == viewer.id)).all()
+        }
+        bookmarked = {
+            row.article_id
+            for row in session.exec(
+                select(Bookmark).where(Bookmark.user_id == viewer.id)
+            ).all()
+        }
+
+    out: list[ArticleOut] = []
+    for art in articles:
+        author = authors.get(art.author_handle)
+        discipline = disciplines.get(art.discipline_slug)
+        if not author or not discipline:
+            continue
+        out.append(
+            article_to_out(
+                art,
+                author,
+                discipline,
+                liked=art.id in liked,
+                bookmarked=art.id in bookmarked,
+            )
+        )
+    return out
