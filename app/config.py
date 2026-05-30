@@ -17,13 +17,19 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60 * 24 * 30  # 30 days
 
     # Frontend origins allowed to call this API (browser-side requests).
-    cors_origins: list[str] = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+    # Comma-separated; override via the CORS_ORIGINS env var in production.
+    cors_origins: str = (
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "https://engineering-blog-lilac.vercel.app"
+    )
 
     # Re-seed demo data on startup if the DB is empty.
     seed_on_startup: bool = True
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
 @lru_cache
