@@ -119,3 +119,24 @@ class LikeResult(BaseModel):
 
 class BookmarkResult(BaseModel):
     bookmarked: bool
+
+
+# ---- Notifications ----
+
+
+class NotificationOut(BaseModel):
+    id: str
+    type: str  # like | bookmark
+    actorName: str
+    actorHandle: str
+    actorAvatarUrl: str | None = None
+    actorAvatarColor: str
+    articleSlug: str
+    articleTitle: str
+    read: bool
+    createdAt: str
+
+
+class NotificationsOut(BaseModel):
+    items: list[NotificationOut]
+    unreadCount: int

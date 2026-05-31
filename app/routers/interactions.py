@@ -18,6 +18,7 @@ from ..schemas import (
 from ..security import get_current_user
 from ..serializers import enrich_articles
 from ..utils import slugify
+from .notifications import create_notification
 
 router = APIRouter()
 
@@ -170,6 +171,7 @@ def like_article(
         session.add(Like(user_id=user.id, article_id=article.id))
         article.likes += 1
         session.add(article)
+        create_notification(session, actor=user, article=article, type_="like")
         session.commit()
         session.refresh(article)
     return LikeResult(likes=article.likes, liked=True)
@@ -201,6 +203,7 @@ def bookmark_article(
     article = _get_article_or_404(slug, session)
     if not session.get(Bookmark, (user.id, article.id)):
         session.add(Bookmark(user_id=user.id, article_id=article.id))
+        create_notification(session, actor=user, article=article, type_="bookmark")
         session.commit()
     return BookmarkResult(bookmarked=True)
 

@@ -60,6 +60,20 @@ class Article(SQLModel, table=True):
     created_at: str = ""
 
 
+class Notification(SQLModel, table=True):
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)  # recipient
+    type: str  # like | bookmark
+    actor_handle: str
+    actor_name: str
+    actor_avatar_url: str | None = None
+    actor_avatar_color: str = "bg-indigo-600"
+    article_slug: str
+    article_title: str
+    read: bool = Field(default=False, index=True)
+    created_at: str = ""
+
+
 class Like(SQLModel, table=True):
     user_id: str = Field(foreign_key="user.id", primary_key=True)
     article_id: str = Field(foreign_key="article.id", primary_key=True)
