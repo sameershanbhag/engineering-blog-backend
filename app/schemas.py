@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 # Response field names are camelCase to match the frontend TypeScript types in
 # Blog/src/lib/types.ts exactly, so the client consumes them with no mapping.
@@ -91,6 +91,14 @@ class OAuthIn(BaseModel):
     email: EmailStr
     name: str
     image: str | None = None
+
+
+class ProfileUpdateIn(BaseModel):
+    # All optional: only provided fields are updated. Rendered as plain text
+    # on the client (React-escaped), so no HTML; bounded to sane lengths.
+    title: str | None = Field(default=None, max_length=120)
+    bio: str | None = Field(default=None, max_length=600)
+    github: str | None = Field(default=None, max_length=200)
 
 
 # ---- Write / interactions ----

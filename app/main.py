@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import init_db
-from .routers import auth, content, interactions, notifications
+from .routers import auth, content, interactions, notifications, profile
 from .seed import seed
 
 
@@ -31,6 +31,7 @@ app.include_router(content.router, tags=["content"])
 app.include_router(auth.router)
 app.include_router(interactions.router, tags=["interactions"])
 app.include_router(notifications.router, tags=["notifications"])
+app.include_router(profile.router, tags=["profile"])
 
 
 @app.get("/health", tags=["meta"])
